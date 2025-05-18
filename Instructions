@@ -1,0 +1,180 @@
+exactly how to scaffold, code, container-ise, test and ship the whole trading-bot stack you just designed, targeted at:
+
+Broker / Execution – Alpaca (v2 REST + WebSocket)
+Repo Hosting – GitHub (mono-repo, trunk-based)
+Runtime – Docker-Compose locally ➜ one-click deploy to Digital Ocean App Platform (or any K8s/Docker host)
+Languages / Frameworks – Python 3.11 back-end (FastAPI, Pydantic, async),
+React + TypeScript front-end (Vite + shadcn/ui + Tailwind),
+PostgreSQL + Redis + RabbitMQ (Celery) for state, cache, tasks,
+ML models served with FastAPI “model-server” micro-service.
+Everything is broken into clear Codex tasks with code stubs, file-paths, and acceptance tests, so Codex can implement it chunk-by-chunk.
+Feel free to trim sections you don’t need or add your own strategy code later.
+
+📄 Prompt you give to Codex
+
+# ============  HIGH-LEVEL GOAL  ============
+
+You are ChatGPT-Codex.  
+Generate a complete, production-ready, **AI-enhanced trading-bot** code-base as a GitHub mono-repo named `alpaca-ai-bot`.  
+The bot must:
+
+1. Trade US equities & equity options on **Alpaca** (paper & live).  
+2. Support **intraday scalping**, **swing trading**, and **options strategies**.  
+3. Work in **semi-auto** (user approves trades) or **full-auto**.  
+4. Make trade decisions every few **minutes** (not HFT micro-seconds).  
+5. Run as containerised micro-services and deploy in one click on **DigitalOcean**.  
+6. Provide a modern **web UI** (React+TypeScript) for monitoring & control.  
+7. Persist logs, trades, metrics and support automatic model retraining.  
+
+Follow the detailed spec below.
+
+# ============  DIRECTORY / REPO STRUCTURE  ============
+
+alpaca-ai-bot/
+├── .github/
+│   └── workflows/ci.yml
+├── infra/                 # docker-compose, k8s manifests, Terraform (optional)
+│   ├── docker-compose.yaml
+│   └── k8s/
+├── backend/
+│   ├── app/               # FastAPI application code
+│   │   ├── main.py
+│   │   ├── api/           # REST endpoints
+│   │   ├── core/          # settings, logging, utils
+│   │   ├── data/          # market-data adapters
+│   │   ├── strategy/      # signal generators, AI models
+│   │   ├── risk/          # risk manager
+│   │   ├── execution/     # order router
+│   │   ├── tasks/         # Celery tasks
+│   │   └── tests/
+│   └── model_server/      # separate FastAPI serving ML + LLM calls
+├── frontend/
+│   ├── src/
+│   ├── public/
+│   └── vite.config.ts
+├── docs/                  # markdown docs, SOPs, API spec, architecture diagram
+└── pyproject.toml
+
+# ============  TECH CHOICES & DEPENDENCIES  ============
+
+* Python 3.11, FastAPI, Uvicorn, Pydantic (settings & schemas)  
+* Alpaca-py SDK (v2)  
+* Websockets (`websockets` lib) for live data  
+* Async TA-lib (`ta`), pandas, numpy for indicators  
+* scikit-learn + xgboost for probabilistic models  
+* OpenAI SDK (or local GGUF model via llama-cpp) for LLM calls  
+* Celery + RabbitMQ for async tasks (model retraining, data ETL)  
+* PostgreSQL (trade journal + state), Redis (caching, pub/sub)  
+* React 18 + TypeScript, Vite, shadcn/ui, TailwindCSS, Zustand store  
+* Docker + docker-compose for local; DigitalOcean App Platform or DO Kubernetes for prod  
+* PyTest, Playwright for UI e2e tests, Pre-commit hooks (black, isort, flake8)  
+
+# ============  STEP-BY-STEP TASKS FOR CODEX  ============
+
+### 0.  Repository bootstrap
+* Create `pyproject.toml` with Poetry (or hatch) managing deps listed above.  
+* Add `.gitignore`, `README.md` summarising project and quick-start.  
+* Scaffold Dockerfiles:
+  * `infra/Dockerfile.backend`
+  * `infra/Dockerfile.frontend`
+* Provide `infra/docker-compose.yaml` with:
+  * backend, model_server, frontend, postgres, redis, rabbit, flower.
+
+### 1.  Backend - FastAPI core
+* `backend/app/core/config.py` – read env vars via Pydantic Settings (ALPACA_KEY, SECRET, DB_URL, etc.).
+* `backend/app/core/logging.py` – structlog setup JSON logs.
+* `backend/app/main.py` – FastAPI app factory, include routers, health endpoint.
+* `backend/app/api/routes.py`
+  * `/signals/next`  GET – returns current trade suggestions.
+  * `/trades/approve/{signal_id}`  POST – approve trade (semi-auto).
+  * `/settings/` CRUD endpoints.
+
+### 2.  Market Data adapters
+* Under `backend/app/data/`, write:
+  * `alpaca_stream.py` – async WebSocket client subscribing to quotes, trades, bars.
+  * `news_feed.py` – example Polygon.io or Finnhub news feed (optional).
+* Implement an internal async Pub/Sub (Redis streams) or Python async queue to broadcast market events to strategy engine.
+
+### 3.  Strategy Engine
+* `backend/app/strategy/base.py` – abstract `Strategy` class with `on_bar`, `on_quote`, etc.
+* `backend/app/strategy/scalping.py` – example momentum/mean-reversion scalping strategy.
+* `backend/app/strategy/swing.py` – EMA crossover + ML probability.
+* `backend/app/strategy/options.py` – simplistic vertical spread seller (uses option chain endpoint).
+* Add `AIHelper` util that:
+  * Sends latest headline text to LLM, returns sentiment score.
+  * Caches results to Redis.
+
+### 4.  Risk Management
+* `backend/app/risk/manager.py`
+  * Position sizing via fixed-fraction or Kelly fraction.
+  * Check max risk per trade, per day, portfolio VAR.
+  * Attach stop-loss / take-profit to trade.
+  * Expose `risk_manager.validate(signal) -> ApprovedSignal | RejectedSignal`.
+
+### 5.  Execution Engine
+* `backend/app/execution/router.py`
+  * Converts ApprovedSignal to Alpaca order (market/limit).
+  * Handles partial fills, smart-routes if dark-pool (simulated).
+  * Emits `OrderEvent` to event bus and persists to DB.
+
+### 6.  Model Server micro-service
+* Separate FastAPI `backend/model_server/main.py`
+  * `/predict/price` – returns probability of up-move given JSON features.
+  * Loads lightweight XGBoost model from `models/xgb_price.bin`.
+  * `/llm/sentiment` – proxy to OpenAI completions (or local model).
+  * Use `asyncio`, rely on ENV `OPENAI_API_KEY`.
+
+### 7.  Celery Tasks
+* ETL nightly data job to retrain models and save back to S3 or local volume.
+* Alert task sending email / Slack via webhook on critical events.
+* Optional: scheduled task to roll option positions.
+
+### 8.  Database & ORM
+* Use SQLModel or SQLAlchemy 2.0.  
+* Tables: `signals`, `trades`, `positions`, `metrics`.
+* Alembic migrations.
+
+### 9.  Front-end (React TS)
+* Scaffold Vite + Tailwind + shadcn/ui.
+* Pages:
+  * **Dashboard** – equity curve, current P&L, risk gauges.
+  * **Signals** – table of pending signals with Approve/Reject buttons.
+  * **Positions** – open positions, edit stop, close.
+  * **Settings** – connection credentials, risk sliders, strategy toggles.
+* API client in `/src/api.ts` (fetch wrapper).
+* State mgmt via Zustand, websockets for live updates.
+
+### 10.  Tests & CI
+* PyTest unit tests for each module, plus integration test mocking Alpaca (use `pytest-alpaca` or `requests_mock`).
+* Playwright tests: load dashboard, approve a mock signal → verify WebSocket pushes update.
+* GitHub Actions `.github/workflows/ci.yml`:
+  * Lint (black, isort, flake8), mypy.
+  * Backend tests, front-end tests, build Docker images, push to `ghcr.io`.
+
+### 11.  Deployment guides
+* `docs/deployment.md`:
+  * Docker-Compose local: `docker compose up --build`.
+  * DigitalOcean: create App Platform, connect GitHub repo, set buildpacks: web (backend), worker (model server, Celery), static (frontend).
+  * Secrets: provide ALPACA keys, OPENAI key, DB URL.
+* Include Terraform example under `infra/terraform/` for optional DO-k8s cluster.
+
+### 12.  README Quick-start
+```bash
+git clone https://github.com/<user>/alpaca-ai-bot
+cp .env.example .env        # fill keys
+docker compose up --build
+# Open http://localhost:3000  – approve or toggle auto mode
+============ ACCEPTANCE CRITERIA ============
+
+docker compose up brings up DB, redis, rabbit, backend, model_server, frontend.
+Navigating to / in browser shows dashboard; WebSocket shows test price stream.
+pytest passes ≥90% of unit tests.
+GitHub Actions CI builds & pushes images.
+Can place and cancel a paper trade on Alpaca (sandbox).
+Risk manager blocks order exceeding risk limit (unit test demonstrates).
+Strategy engine logs signals every minute (simulated) and score combines ML+LLM sentiment.
+Generate actual code file-by-file, starting with pyproject.toml, then Dockerfiles, then Backend core, etc.
+Add helpful comments.
+Break output into CODE fences per file, ready for copy-paste.
+Keep each message ≤ 25 k tokens; continue in multiple messages (“Part n”) until repo complete.
+When done, output “✅ CODEBASE COMPLETE”.
