@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+
+# Env
+.env
+.env.*
+!.env.example
+node_modules/
+
+# Pytest
+.cache
+
+# Poetry
+# (lock file is tracked for reproducible builds)
+
+
+# Build
+/dist/
+/*.db
+
+# Docker
+*.log
+
